@@ -404,9 +404,20 @@ int Workers::handleContextEvents(std::shared_ptr<RdmaContext>& context) {
                  << ibv_event_type_str(event.event_type) << " for context "
                  << context->name();
     if (event.event_type == IBV_EVENT_QP_FATAL ||
-        event.event_type == IBV_EVENT_WQ_FATAL) {
+        event.event_type == IBV_EVENT_WQ_FATAL ||
+        event.event_type == IBV_EVENT_QP_ACCESS_ERR ||
+        event.event_type == IBV_EVENT_QP_REQ_ERR) {
+        // QP-level errors: remove the affected endpoint
+        // IBV_EVENT_QP_FATAL: QP in error state
+        // IBV_EVENT_WQ_FATAL: WQ in FATAL state
+        // IBV_EVENT_QP_ACCESS_ERR: Local access violation work queue error
+        // IBV_EVENT_QP_REQ_ERR: Invalid request local work queue error
         auto endpoint = (RdmaEndPoint*)event.element.qp->qp_context;
-        context->endpointStore()->remove(endpoint);
+        if (endpoint) {
+            context->endpointStore()->remove(endpoint);
+            LOG(INFO) << "Action: Endpoint removed due to QP error on "
+                      << context->name();
+        }
     } else if (event.event_type == IBV_EVENT_CQ_ERR) {
         context->pause();
         context->resume();
