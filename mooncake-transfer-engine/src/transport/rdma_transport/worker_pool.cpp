@@ -306,6 +306,20 @@ void WorkerPool::performPollCq(int thread_id) {
                         << ", retry_cnt: " << slice->rdma.retry_cnt
                         << "): " << ibv_wc_status_str(wc[i].status);
                 failed_nr_polls++;
+
+                // For remote access errors, force metadata refresh as the rkey
+                // is likely stale (remote memory was deregistered)
+                if (wc[i].status == IBV_WC_REM_ACCESS_ERR ||
+                    wc[i].status == IBV_WC_REM_INV_REQ_ERR) {
+                    // Force refresh metadata for this segment to get new rkeys
+                    context_.engine().meta()->getSegmentDescByID(
+                        slice->target_id, true);
+                    LOG(WARNING)
+                        << "Worker: Remote access error detected, forcing "
+                           "metadata refresh for segment "
+                        << slice->target_id;
+                }
+
                 if (context_.active() && failed_nr_polls > 32 &&
                     !success_nr_polls) {
                     LOG(WARNING) << "Too many errors found in local RNIC "
@@ -419,9 +433,20 @@ int WorkerPool::doProcessContextEvents() {
     LOG(WARNING) << "Worker: Received context async event "
                  << ibv_event_type_str(event.event_type) << " for context "
                  << context_.deviceName();
-    if (event.event_type == IBV_EVENT_QP_FATAL) {
+    if (event.event_type == IBV_EVENT_QP_FATAL ||
+        event.event_type == IBV_EVENT_QP_ACCESS_ERR ||
+        event.event_type == IBV_EVENT_QP_REQ_ERR) {
+        // QP-level errors: mark the affected endpoint as inactive
+        // IBV_EVENT_QP_FATAL: QP in error state
+        // IBV_EVENT_QP_ACCESS_ERR: Local access violation work queue error
+        // IBV_EVENT_QP_REQ_ERR: Invalid request local work queue error
+        // The endpoint will be cleaned up and reconnected by the worker threads
         auto endpoint = (RdmaEndPoint *)event.element.qp->qp_context;
-        endpoint->set_active(false);
+        if (endpoint) {
+            endpoint->set_active(false);
+            LOG(INFO) << "Worker: Endpoint marked inactive due to QP error on "
+                      << context_.deviceName();
+        }
     } else if (event.event_type == IBV_EVENT_DEVICE_FATAL ||
                event.event_type == IBV_EVENT_CQ_ERR ||
                event.event_type == IBV_EVENT_WQ_FATAL ||
