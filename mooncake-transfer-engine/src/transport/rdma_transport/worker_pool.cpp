@@ -306,6 +306,20 @@ void WorkerPool::performPollCq(int thread_id) {
                         << ", retry_cnt: " << slice->rdma.retry_cnt
                         << "): " << ibv_wc_status_str(wc[i].status);
                 failed_nr_polls++;
+
+                // For remote access errors, force metadata refresh as the rkey
+                // is likely stale (remote memory was deregistered)
+                if (wc[i].status == IBV_WC_REM_ACCESS_ERR ||
+                    wc[i].status == IBV_WC_REM_INV_REQ_ERR) {
+                    // Force refresh metadata for this segment to get new rkeys
+                    context_.engine().meta()->getSegmentDescByID(
+                        slice->target_id, true);
+                    LOG(WARNING)
+                        << "Worker: Remote access error detected, forcing "
+                           "metadata refresh for segment "
+                        << slice->target_id;
+                }
+
                 if (context_.active() && failed_nr_polls > 32 &&
                     !success_nr_polls) {
                     LOG(WARNING) << "Too many errors found in local RNIC "

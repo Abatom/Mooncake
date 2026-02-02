@@ -322,6 +322,20 @@ void Workers::asyncPollCq() {
                               << ", local_nic: " << context->name()
                               << "): " << ibv_wc_status_str(wc[i].status);
                 }
+
+                // For remote access errors, invalidate cached metadata as the
+                // rkey is likely stale (remote memory was deregistered)
+                if (wc[i].status == IBV_WC_REM_ACCESS_ERR ||
+                    wc[i].status == IBV_WC_REM_INV_REQ_ERR) {
+                    auto target_id = slice->task->request.target_id;
+                    transport_->metadata_->segmentManager().invalidateRemote(
+                        target_id);
+                    LOG(WARNING)
+                        << "Remote access error detected, invalidating cached "
+                           "metadata for segment "
+                        << target_id;
+                }
+
                 slice->retry_count++;
                 if (slice->retry_count >=
                     transport_->params_->workers.max_retry_count) {
